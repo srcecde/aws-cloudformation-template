@@ -1,0 +1,63 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Template for Lambda SQS trigger
+
+Resources:
+    S3Bucket:
+        Type: AWS::S3::Bucket
+
+    IAMRole:
+        Type: AWS::IAM::Role
+        Properties:
+            ManagedPolicyArns: 
+                - arn:aws:iam::aws:policy/AWSLambdaExecute
+                - arn:aws:iam::aws:policy/service-role/AWSLambdaSQSQueueExecutionRole
+
+            AssumeRolePolicyDocument:
+                Version: '2012-10-17'
+                Statement:
+                - Effect: Allow
+                  Principal:
+                    Service:
+                    - lambda.amazonaws.com
+                  Action:
+                  - sts:AssumeRole
+
+    SQSQueue:
+        Type: AWS::SQS::Queue
+        Properties:
+            DelaySeconds: 0
+            VisibilityTimeout: 120
+
+    LambdaFunction:
+        Type: AWS::Lambda::Function
+        Properties:
+            Handler: index.lambda_handler
+            Runtime: python3.8
+            Role: !GetAtt IAMRole.Arn
+            Environment:
+                Variables:
+                    BUCKET_NAME: !Ref S3Bucket
+            Code:
+                ZipFile: |
+                  import os
+                  import json
+                  import boto3
+                  import uuid
+                  def lambda_handler(event, context):
+                        BUCKET_NAME = os.environ['BUCKET_NAME']
+                        key = uuid.uuid4().hex + '.json'
+                        s3 = boto3.client('s3')
+                        data = json.loads(event['Records'][0]['body'])
+                        s3.put_object(Bucket=BUCKET_NAME, Key=key, Body=json.dumps(data))
+                        return {
+                            'statusCode': 200,
+                            'body': json.dumps('Hello from Srce Cde!')
+                        }
+
+    LambdaFunctionEventSourceMapping:
+        Type: AWS::Lambda::EventSourceMapping
+        Properties:
+            BatchSize: 10
+            Enabled: true
+            EventSourceArn: !GetAtt SQSQueue.Arn
+            FunctionName: !GetAtt LambdaFunction.Arn
