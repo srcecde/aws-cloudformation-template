@@ -1,0 +1,146 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Asynchronous Text detection from multi-page pdf via Textract by Srce Cde
+
+Parameters:
+    CodeBucketName:
+        Description: Enter S3 bucket name where the code is uploaded
+        Type: String
+
+    S3KeyLambda1:
+        Description: Enter S3 key for lambda code
+        Type: String
+
+    S3KeyLambda2:
+        Description: Enter S3 key reference for parser lambda
+        Type: String
+
+    LambdaLayer:
+        Description: Enter S3 key reference for pandas layer
+        Type: String
+
+Resources:
+    S3Bucket:
+        Type: AWS::S3::Bucket
+        DependsOn: 
+            - DetectDocLambda
+        Properties:
+            BucketName: !Join [ '-', [ !Ref AWS::StackName, !Ref AWS::Region, !Ref AWS::AccountId ] ]
+            NotificationConfiguration:
+                LambdaConfigurations:
+                    - Event: s3:ObjectCreated:*
+                      Function: !GetAtt DetectDocLambda.Arn
+                      Filter:
+                          S3Key:
+                              Rules:
+                                  - Name: prefix
+                                    Value: async-doc-text/
+                                  - Name: suffix
+                                    Value: .pdf
+
+    DetectDocLambda:
+        Type: AWS::Lambda::Function
+        Properties:
+            Handler: lambda_function.lambda_handler
+            Runtime: python3.9
+            Role: !GetAtt LambdaIAMRole.Arn
+            Environment:
+                Variables:
+                    OUTPUT_BUCKET_NAME: !Join [ '-', [ !Ref AWS::StackName, !Ref AWS::Region, !Ref AWS::AccountId ] ]
+                    OUTPUT_S3_PREFIX: 'textract-output'
+                    SNS_TOPIC_ARN: !Ref SNSTopic
+                    SNS_ROLE_ARN: !GetAtt SNSIAMRole.Arn
+            Code:
+                S3Bucket: !Ref CodeBucketName
+                S3Key: !Ref S3KeyLambda1
+
+    S3InvokeLambdaPermission:
+        Type: AWS::Lambda::Permission
+        DependsOn: 
+            - DetectDocLambda
+        Properties:
+            Action: lambda:InvokeFunction
+            FunctionName: !Ref DetectDocLambda
+            Principal: s3.amazonaws.com
+            SourceArn: !Sub
+                - 'arn:aws:s3:::${S3Bucket}'
+                - { S3Bucket: !Join [ '-', [ !Ref AWS::StackName, !Ref AWS::Region, !Ref AWS::AccountId ] ] }
+
+    LambdaIAMRole:
+        Type: AWS::IAM::Role
+        Properties:
+            ManagedPolicyArns: 
+                - arn:aws:iam::aws:policy/AWSLambdaExecute
+                - arn:aws:iam::aws:policy/AmazonTextractFullAccess
+
+            AssumeRolePolicyDocument:
+                Version: '2012-10-17'
+                Statement:
+                - Effect: Allow
+                  Principal:
+                    Service:
+                    - lambda.amazonaws.com
+                  Action:
+                  - sts:AssumeRole
+
+    PandasLayer:
+        Type: AWS::Lambda::LayerVersion
+        Properties:
+            CompatibleRuntimes:
+              - python3.9
+            Content:
+              S3Bucket: !Ref CodeBucketName
+              S3Key: !Ref LambdaLayer
+            Description: Pandas layer
+
+    ParseLambda:
+        Type: AWS::Lambda::Function
+        Properties:
+            Handler: lambda_function.lambda_handler
+            Runtime: python3.9
+            Timeout: 10
+            Role: !GetAtt LambdaIAMRole.Arn
+            Layers:
+                - !Ref PandasLayer
+            Environment:
+                Variables:
+                    BUCKET_NAME: !Join [ '-', [ !Ref AWS::StackName, !Ref AWS::Region, !Ref AWS::AccountId ] ]
+                    PREFIX: 'csv'
+            Code:
+                S3Bucket: !Ref CodeBucketName
+                S3Key: !Ref S3KeyLambda2
+
+    SNSTopic:
+        Type: AWS::SNS::Topic
+        DependsOn: 
+            - ParseLambda
+        Properties:
+            Subscription:
+                - Protocol: lambda
+                  Endpoint: !GetAtt ParseLambda.Arn
+
+    SNSInvokeLambdaPermission:
+        Type: AWS::Lambda::Permission
+        DependsOn: 
+            - ParseLambda
+        Properties:
+            Action: lambda:InvokeFunction
+            FunctionName: !GetAtt ParseLambda.Arn
+            Principal: sns.amazonaws.com
+
+    
+    SNSIAMRole:
+        Type: AWS::IAM::Role
+        Properties:
+            ManagedPolicyArns: 
+                - arn:aws:iam::aws:policy/service-role/AmazonTextractServiceRole
+                - arn:aws:iam::aws:policy/AmazonSNSFullAccess
+
+            AssumeRolePolicyDocument:
+                Version: '2012-10-17'
+                Statement:
+                - Effect: Allow
+                  Principal:
+                    Service:
+                    - textract.amazonaws.com
+                  Action:
+                  - sts:AssumeRole
