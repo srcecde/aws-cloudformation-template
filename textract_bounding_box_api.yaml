@@ -1,0 +1,243 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Textract bounding box cloudformation template by Srce Cde
+
+Parameters:
+    CodeBucketName:
+        Description: Enter S3 bucket name where the code is uploaded
+        Type: String
+
+    S3KeyPresignedUploadLambda:
+        Description: Enter S3 key reference for pre-signed upload lambda
+        Type: String
+    
+    S3KeyPresignedDownloadLambda:
+        Description: Enter S3 key reference for pre-signed download lambda
+        Type: String
+
+    S3KeyImageProcessLambda:
+        Description: Enter S3 key reference for image processing lambda
+        Type: String
+    
+    LambdaLayer:
+        Description: Enter S3 key reference for OpennCV layer
+        Type: String
+
+Resources:
+    S3Bucket:
+        Type: AWS::S3::Bucket
+        DependsOn: 
+            - ImageProcessingLambda
+        Properties:
+            BucketName: !Join [ '-', [ !Ref AWS::StackName, !Ref AWS::Region, !Ref AWS::AccountId ] ]
+            NotificationConfiguration:
+                LambdaConfigurations:
+                    - Event: s3:ObjectCreated:*
+                      Function: !GetAtt ImageProcessingLambda.Arn
+                      Filter:
+                          S3Key:
+                              Rules:
+                                  - Name: prefix
+                                    Value: upload/
+
+    ImageProcessingLambda:
+        Type: AWS::Lambda::Function
+        Properties:
+            Handler: lambda_function.lambda_handler
+            Runtime: python3.9
+            Timeout: 12
+            Role: !GetAtt ImageProcessIAMRole.Arn
+            Layers:
+                - !Ref OpencvLayer
+            Code:
+                S3Bucket: !Ref CodeBucketName
+                S3Key: !Ref S3KeyImageProcessLambda
+
+    S3InvokeLambdaPermission:
+        Type: AWS::Lambda::Permission
+        DependsOn: 
+            - ImageProcessingLambda
+        Properties:
+            Action: lambda:InvokeFunction
+            FunctionName: !Ref ImageProcessingLambda
+            Principal: s3.amazonaws.com
+            SourceArn: !Sub
+                - 'arn:aws:s3:::${S3Bucket}'
+                - { S3Bucket: !Join [ '-', [ !Ref AWS::StackName, !Ref AWS::Region, !Ref AWS::AccountId ] ] }
+
+    ImageProcessIAMRole:
+        Type: AWS::IAM::Role
+        Properties:
+            ManagedPolicyArns: 
+                - arn:aws:iam::aws:policy/AWSLambdaExecute
+                - arn:aws:iam::aws:policy/AmazonTextractFullAccess
+            AssumeRolePolicyDocument:
+                Version: '2012-10-17'
+                Statement:
+                - Effect: Allow
+                  Principal:
+                    Service:
+                    - lambda.amazonaws.com
+                  Action:
+                  - sts:AssumeRole
+
+    OpencvLayer:
+        Type: AWS::Lambda::LayerVersion
+        Properties:
+            CompatibleRuntimes:
+              - python3.9
+            Content:
+              S3Bucket: !Ref CodeBucketName
+              S3Key: !Ref LambdaLayer
+            Description: OpenCV layer
+
+    PresignedUploadLambda:
+        Type: AWS::Lambda::Function
+        Properties:
+            Handler: lambda_function.lambda_handler
+            Runtime: python3.9
+            Role: !GetAtt PresignedIAMRole.Arn
+            Environment:
+                Variables:
+                    BUCKET_NAME: !Join [ '-', [ !Ref AWS::StackName, !Ref AWS::Region, !Ref AWS::AccountId ] ]
+                    PREFIX: 'upload'
+            Code:
+                S3Bucket: !Ref CodeBucketName
+                S3Key: !Ref S3KeyPresignedUploadLambda
+    
+    PresignedIAMRole:
+        Type: AWS::IAM::Role
+        Properties:
+            ManagedPolicyArns: 
+                - arn:aws:iam::aws:policy/AWSLambdaExecute
+            AssumeRolePolicyDocument:
+                Version: '2012-10-17'
+                Statement:
+                - Effect: Allow
+                  Principal:
+                    Service:
+                    - lambda.amazonaws.com
+                  Action:
+                  - sts:AssumeRole
+
+    PresignedDownloadLambda:
+        Type: AWS::Lambda::Function
+        Properties:
+            Handler: lambda_function.lambda_handler
+            Runtime: python3.9
+            Timeout: 5
+            Role: !GetAtt PresignedIAMRole.Arn
+            Environment:
+                Variables:
+                    BUCKET_NAME: !Join [ '-', [ !Ref AWS::StackName, !Ref AWS::Region, !Ref AWS::AccountId ] ]
+                    PREFIX: 'processed'
+            Code:
+                S3Bucket: !Ref CodeBucketName
+                S3Key: !Ref S3KeyPresignedDownloadLambda
+    
+    HTTPApi:
+        Type: AWS::ApiGatewayV2::Api
+        Properties:
+          Name: sampleapi
+          ProtocolType: HTTP
+    
+    UploadIntegration:
+        Type: AWS::ApiGatewayV2::Integration
+        Properties:
+          ApiId: !Ref HTTPApi
+          Description: Lambda Integration
+          IntegrationType: AWS_PROXY
+          IntegrationUri: !Join
+            - ''
+            - - 'arn:'
+              - !Ref 'AWS::Partition'
+              - ':apigateway:'
+              - !Ref 'AWS::Region'
+              - ':lambda:path/2015-03-31/functions/'
+              - !GetAtt PresignedUploadLambda.Arn
+              - /invocations
+          IntegrationMethod: POST
+          PayloadFormatVersion: '2.0'
+    
+    DownloadIntegration:
+        Type: AWS::ApiGatewayV2::Integration
+        Properties:
+          ApiId: !Ref HTTPApi
+          Description: Lambda Integration
+          IntegrationType: AWS_PROXY
+          IntegrationUri: !Join
+            - ''
+            - - 'arn:'
+              - !Ref 'AWS::Partition'
+              - ':apigateway:'
+              - !Ref 'AWS::Region'
+              - ':lambda:path/2015-03-31/functions/'
+              - !GetAtt PresignedDownloadLambda.Arn
+              - /invocations
+          IntegrationMethod: POST
+          PayloadFormatVersion: '2.0'
+
+    UploadRoute:
+        Type: AWS::ApiGatewayV2::Route
+        DependsOn:
+          - UploadIntegration
+        Properties:
+          ApiId: !Ref HTTPApi
+          RouteKey: GET /upload
+          AuthorizationType: AWS_IAM
+          Target: !Join 
+            - /
+            - - integrations
+              - !Ref UploadIntegration
+    
+    DownloadRoute:
+        Type: AWS::ApiGatewayV2::Route
+        DependsOn:
+          - DownloadIntegration
+        Properties:
+          ApiId: !Ref HTTPApi
+          RouteKey: GET /download
+          AuthorizationType: AWS_IAM
+          Target: !Join 
+            - /
+            - - integrations
+              - !Ref DownloadIntegration
+
+    Deployment:
+        Type: AWS::ApiGatewayV2::Deployment
+        DependsOn:
+          - UploadRoute
+          - DownloadRoute
+          - MyStage
+        Properties:
+          Description: My deployment
+          ApiId: !Ref HTTPApi
+          StageName: v1
+    
+    MyStage:
+        Type: AWS::ApiGatewayV2::Stage
+        Properties:
+          StageName: v1
+          Description: Prod Stage
+          ApiId: !Ref HTTPApi
+    
+    APIUploadLambdaPermission:
+        Type: AWS::Lambda::Permission
+        Properties:
+            Action: lambda:InvokeFunction
+            FunctionName: !Ref PresignedUploadLambda
+            Principal: apigateway.amazonaws.com
+            SourceArn: !Sub
+                - 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${API}/${STAGE}/*/*'
+                - API: !Ref HTTPApi
+                  STAGE: !Ref MyStage
+    
+    APIDownloadLambdaPermission:
+        Type: AWS::Lambda::Permission
+        Properties:
+            Action: lambda:InvokeFunction
+            FunctionName: !Ref PresignedDownloadLambda
+            Principal: apigateway.amazonaws.com
+            SourceArn: !Sub
+                - 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${API}/${STAGE}/*/*'
+                - API: !Ref HTTPApi
+                  STAGE: !Ref MyStage
