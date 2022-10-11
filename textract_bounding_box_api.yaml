@@ -241,3 +241,8 @@ Resources:
                 - 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${API}/${STAGE}/*/*'
                 - API: !Ref HTTPApi
                   STAGE: !Ref MyStage
+
+Outputs:
+    Endpoint:
+        Description: API Endpoint
+        Value: !Sub "https://${HTTPApi}.execute-api.${AWS::Region}.amazonaws.com/${MyStage}/"
