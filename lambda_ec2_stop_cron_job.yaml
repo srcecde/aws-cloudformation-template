@@ -1,0 +1,282 @@
+AWSTemplateFormatVersion : "2010-09-09"
+Description: "A cron job to stop the EC2 instances every friday in all region!"
+
+Parameters:
+    CronJobStartSchedule:
+        Description: Enter Cron job expression for starting the instances
+        Type: String
+        Default: "cron(30 2 ? * MON *)"
+
+    CronJobStopSchedule:
+        Description: Enter Cron job expression for stopping the instances
+        Type: String
+        Default: "cron(30 14 ? * FRI *)"
+
+    InstanceIDs:
+        Description: Enter the list of Instance Ids to skip stopping
+        Type: String
+        Default: "['instance-id']"
+        AllowedPattern: "\\['[-\\w\\s']+(, *'[-\\w\\s]+')*]"
+
+Resources:
+    IAMRole:
+        Type: AWS::IAM::Role
+        Properties:
+            AssumeRolePolicyDocument:
+                Version: '2012-10-17'
+                Statement:
+                - Effect: Allow
+                  Principal:
+                    Service:
+                    - lambda.amazonaws.com
+                  Action:
+                  - sts:AssumeRole
+            Policies:
+            - PolicyName: LambdaFunctionPolicy
+              PolicyDocument:
+                    Version: '2012-10-17'
+                    Statement:
+                    - Effect: Allow
+                      Action:
+                        - logs:CreateLogGroup
+                        - logs:CreateLogStream
+                        - logs:PutLogEvents
+                      Resource: '*'
+                    - Effect: Allow
+                      Action:
+                        - ec2:DescribeInstances
+                        - ec2:DescribeRegions
+                        - ec2:StopInstances
+                        - ec2:StartInstances
+                        - ec2:DescribeInstanceStatus
+                      Resource: '*'
+
+    LambdaFunction:
+        Type: AWS::Lambda::Function
+        Properties:
+            Handler: index.lambda_handler
+            Runtime: python3.9
+            Timeout: 60
+            Role: !GetAtt IAMRole.Arn
+            Environment:
+                Variables:
+                    INSTANCE_IDS_TO_IGNORE_STOP: !Ref InstanceIDs
+            Code:
+                ZipFile: |
+                    """
+                    -*- coding: utf-8 -*-
+                    ========================
+                    AWS Lambda
+                    ========================
+                    Contributor: Chirag Rathod (Srce Cde)
+                    ========================
+                    """
+
+                    import os
+                    import sys
+                    import traceback
+                    import logging
+                    import ast
+                    import json
+                    import boto3
+
+                    logger = logging.getLogger()
+                    logger.setLevel(logging.INFO)
+
+                    # retrieve list of instance ids from ENV variable to skip stopping
+                    INSTANCE_IDS_TO_IGNORE_STOP = ast.literal_eval(
+                        os.environ.get("INSTANCE_IDS_TO_IGNORE_STOP", "[]")
+                    )
+
+
+                    def process_error() -> dict:
+                        ex_type, ex_value, ex_traceback = sys.exc_info()
+                        traceback_string = traceback.format_exception(ex_type, ex_value, ex_traceback)
+                        error_msg = json.dumps(
+                            {
+                                "errorType": ex_type.__name__,
+                                "errorMessage": str(ex_value),
+                                "stackTrace": traceback_string,
+                            }
+                        )
+                        return error_msg
+
+
+                    def fetch_regions():
+                        """
+                        Helper function to retrieve regions
+
+                        Returns:
+                        --------
+                        regions: list of AWS regions
+                        """
+                        ec2_client = boto3.client("ec2")
+                        try:
+                            regions = ec2_client.describe_regions()
+                        except:
+                            error_msg = process_error()
+                            logger.error(error_msg)
+                        return regions["Regions"]
+
+
+                    def stop_instances(ec2_client: object, instance_ids: list) -> None:
+                        """
+                        Helper function to stop the instances
+
+                        Parameters:
+                        -----------
+                        ec2_client: boto3 region specific object
+                        instance_ids: list of instance ids to stop
+                        """
+                        try:
+                            response = ec2_client.stop_instances(InstanceIds=instance_ids, Force=True)
+                        except:
+                            error_msg = process_error()
+                            logger.error(error_msg)
+
+
+                    def start_instances(ec2_client: object, instance_ids: list) -> None:
+                        """
+                        Helper function to stop the instances
+
+                        Parameters:
+                        -----------
+                        ec2_client: boto3 region specific object
+                        instance_ids: list of instance ids to start
+                        """
+                        try:
+                            response = ec2_client.start_instances(InstanceIds=instance_ids)
+                        except:
+                            error_msg = process_error()
+                            logger.error(error_msg)
+
+
+                    def get_instance_ids(response: dict, STOP: bool) -> list:
+                        """
+                        Parse the instance IDs from response
+
+                        Parameters:
+                        -----------
+                        response: boto3 describe_instances response
+                        STOP: Flag to decide type of instance Ids to fetch
+
+                        Returns:
+                        --------
+                        instance_ids: list of instance ids to stop
+                        """
+                        if STOP:
+                            instance_ids_to_stop = []
+                            for resp in response.get("Reservations"):
+                                for instance in resp.get("Instances"):
+                                    if (
+                                        instance.get("State").get("Name") in ["pending", "running"]
+                                        and instance["InstanceId"] not in INSTANCE_IDS_TO_IGNORE_STOP
+                                    ):
+                                        instance_ids_to_stop.append(instance["InstanceId"])
+                            return instance_ids_to_stop
+                        else:
+                            instance_ids_to_start = []
+                            for resp in response.get("Reservations"):
+                                for instance in resp.get("Instances"):
+                                    if instance.get("State").get("Name") in ["stopped", "stopping"]:
+                                        instance_ids_to_start.append(instance["InstanceId"])
+                            return instance_ids_to_start
+
+
+                    def start_stop_instances_across_region(regions: list, STOP=True) -> None:
+                        """
+                        Start / Stop the instances across regions
+
+                        Parameters:
+                        -----------
+                        regions: list of regions to analyze
+                        STOP: Flag to decide whether to start or stop the instances
+
+                        """
+                        try:
+                            for region in regions:
+                                ec2_client = boto3.client("ec2", region_name=region["RegionName"])
+                                response = ec2_client.describe_instances()
+
+                                instance_ids = get_instance_ids(response, STOP)
+                                if instance_ids and STOP:
+                                    stop_instances(ec2_client, instance_ids)
+
+                                if instance_ids and not STOP:
+                                    start_instances(ec2_client, instance_ids)
+
+                                while "NextToken" in response:
+                                    response = ec2_client.describe_instances(
+                                        NextToken=response["NextToken"]
+                                    )
+                                    instance_ids = get_instance_ids(response, STOP)
+                                    if instance_ids and STOP:
+                                        stop_instances(ec2_client, instance_ids)
+
+                                    if instance_ids and not STOP:
+                                        start_instances(ec2_client, instance_ids)
+
+                        except:
+                            error_msg = process_error()
+                            logger.error(error_msg)
+
+
+                    def lambda_handler(event, context):
+                        """
+                        Main handler
+                        """
+                        logging.info(event)
+                        # retrieve regions
+                        regions = fetch_regions()
+
+                        try:
+                            rule_type = event["resources"][0].split("/")[-1]
+
+                            # checking which rule triggered the lambda function
+                            if "ScheduledEC2StopRule" in rule_type:
+                                start_stop_instances_across_region(regions, STOP=True)
+
+                            if "ScheduledEC2StartRule" in rule_type:
+                                start_stop_instances_across_region(regions, STOP=False)
+                        except:
+                            error_msg = process_error()
+                            logger.error(error_msg)
+
+                        return {"statusCode": 200, "body": json.dumps("Thanks from Srce Cde (Chirag)!")}
+
+                
+    ScheduledEC2StopRule:
+        Type: AWS::Events::Rule
+        Properties:
+            Description: ScheduledStopRule
+            ScheduleExpression: !Ref CronJobStopSchedule
+            State: "ENABLED"
+            Targets: 
+                - Arn: !GetAtt LambdaFunction.Arn
+                  Id: !Sub ${AWS::StackName}
+    
+    ScheduledEC2StartRule:
+        Type: AWS::Events::Rule
+        Properties:
+            Description: ScheduledStartRule
+            ScheduleExpression: !Ref CronJobStartSchedule
+            State: "ENABLED"
+            Targets: 
+                - Arn: !GetAtt LambdaFunction.Arn
+                  Id: !Sub ${AWS::StackName}
+
+    PermissionForStopRuleToInvokeLambda:
+        Type: AWS::Lambda::Permission
+        Properties:
+            FunctionName: !Ref LambdaFunction
+            Action: lambda:InvokeFunction
+            Principal: events.amazonaws.com
+            SourceArn: !GetAtt ScheduledEC2StopRule.Arn
+    
+    PermissionForStartRuleToInvokeLambda:
+        Type: AWS::Lambda::Permission
+        Properties:
+            FunctionName: !Ref LambdaFunction
+            Action: lambda:InvokeFunction
+            Principal: events.amazonaws.com
+            SourceArn: !GetAtt ScheduledEC2StartRule.Arn
