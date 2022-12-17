@@ -255,6 +255,14 @@ Resources:
                 - Arn: !GetAtt LambdaFunction.Arn
                   Id: !Sub ${AWS::StackName}
     
+    PermissionForStopRuleToInvokeLambda:
+        Type: AWS::Lambda::Permission
+        Properties:
+            FunctionName: !Ref LambdaFunction
+            Action: lambda:InvokeFunction
+            Principal: events.amazonaws.com
+            SourceArn: !GetAtt ScheduledEC2StopRule.Arn
+    
     ScheduledEC2StartRule:
         Type: AWS::Events::Rule
         Properties:
@@ -264,14 +272,6 @@ Resources:
             Targets: 
                 - Arn: !GetAtt LambdaFunction.Arn
                   Id: !Sub ${AWS::StackName}
-
-    PermissionForStopRuleToInvokeLambda:
-        Type: AWS::Lambda::Permission
-        Properties:
-            FunctionName: !Ref LambdaFunction
-            Action: lambda:InvokeFunction
-            Principal: events.amazonaws.com
-            SourceArn: !GetAtt ScheduledEC2StopRule.Arn
     
     PermissionForStartRuleToInvokeLambda:
         Type: AWS::Lambda::Permission
