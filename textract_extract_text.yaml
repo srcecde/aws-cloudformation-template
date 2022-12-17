@@ -1,0 +1,158 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Synchronous Text extraction using lambda via textract by Srce Cde
+
+Parameters:
+    S3BucketName:
+        Description: Enter S3 bucket name
+        Type: String
+        MinLength: 3
+        MaxLength: 10
+        AllowedPattern: "^[A-Za-z0-9_-]*$"
+
+Resources:
+    OCRLambda:
+        Type: AWS::Lambda::Function
+        Properties:
+            Handler: index.lambda_handler
+            Runtime: python3.9
+            Timeout: 15
+            Role: !GetAtt LambdaIAMRole.Arn
+            Code:
+                ZipFile: |
+                    """
+                    -*- coding: utf-8 -*-
+                    ========================
+                    AWS Lambda
+                    ========================
+                    Contributor: Chirag Rathod (Srce Cde)
+                    ========================
+                    """
+                    import sys
+                    import traceback
+                    import logging
+                    import json
+                    import uuid
+                    import boto3
+                    from urllib.parse import unquote_plus
+
+                    logger = logging.getLogger()
+                    logger.setLevel(logging.INFO)
+
+
+                    def process_error() -> dict:
+                        ex_type, ex_value, ex_traceback = sys.exc_info()
+                        traceback_string = traceback.format_exception(ex_type, ex_value, ex_traceback)
+                        error_msg = json.dumps(
+                            {
+                                "errorType": ex_type.__name__,
+                                "errorMessage": str(ex_value),
+                                "stackTrace": traceback_string,
+                            }
+                        )
+                        return error_msg
+
+
+                    def extract_text(response: dict, extract_by="LINE") -> list:
+                        text = []
+                        for block in response["Blocks"]:
+                            if block["BlockType"] == extract_by:
+                                text.append(block["Text"])
+                        return text
+
+
+                    def lambda_handler(event, context):
+                        textract = boto3.client("textract")
+                        s3 = boto3.client("s3")
+
+                        try:
+                            if "Records" in event:
+                                file_obj = event["Records"][0]
+                                bucketname = str(file_obj["s3"]["bucket"]["name"])
+                                filename = unquote_plus(str(file_obj["s3"]["object"]["key"]))
+
+                                logging.info(f"Bucket: {bucketname} ::: Key: {filename}")
+
+                                response = textract.detect_document_text(
+                                    Document={
+                                        "S3Object": {
+                                            "Bucket": bucketname,
+                                            "Name": filename,
+                                        }
+                                    }
+                                )
+                                logging.info(json.dumps(response))
+
+                                # change LINE by WORD if you want word level extraction
+                                raw_text = extract_text(response, extract_by="LINE")
+                                logging.info(raw_text)
+
+                                s3.put_object(Bucket=bucketname, Key=f"output/{filename.split('/')[-1]}_{uuid.uuid4().hex}.txt", Body=str('\n'.join(raw_text)))
+
+                                return {
+                                    "statusCode": 200,
+                                    "body": json.dumps("Document processed successfully!"),
+                                }
+                        except:
+                            error_msg = process_error()
+                            logger.error(error_msg)
+
+                        return {"statusCode": 500, "body": json.dumps("Error processing the document!")}
+
+
+    S3Bucket:
+        Type: AWS::S3::Bucket
+        DependsOn: 
+            - OCRLambda
+        Properties:
+            BucketName: !Join [ '-', [ !Ref S3BucketName, !Ref AWS::Region, !Ref AWS::AccountId ] ]
+            NotificationConfiguration:
+                LambdaConfigurations:
+                    - Event: s3:ObjectCreated:*
+                      Function: !GetAtt OCRLambda.Arn
+                      Filter:
+                          S3Key:
+                              Rules:
+                                  - Name: prefix
+                                    Value: upload-image/
+                                  - Name: suffix
+                                    Value: .png
+    
+    S3InvokeLambdaPermission:
+        Type: AWS::Lambda::Permission
+        Properties:
+            Action: lambda:InvokeFunction
+            FunctionName: !Ref OCRLambda
+            Principal: s3.amazonaws.com
+            SourceArn: !Sub
+                - 'arn:aws:s3:::${S3Bucket}'
+                - { S3Bucket: !Join [ '-', [ !Ref S3BucketName, !Ref AWS::Region, !Ref AWS::AccountId ] ] }
+
+    LambdaIAMRole:
+        Type: AWS::IAM::Role
+        Properties:
+            AssumeRolePolicyDocument:
+                Version: '2012-10-17'
+                Statement:
+                - Effect: Allow
+                  Principal:
+                    Service:
+                    - lambda.amazonaws.com
+                  Action:
+                  - sts:AssumeRole
+            Policies:
+            - PolicyName: LambdaFunctionPolicy
+              PolicyDocument:
+                    Version: '2012-10-17'
+                    Statement:
+                    - Effect: Allow
+                      Action:
+                        - logs:CreateLogGroup
+                        - logs:CreateLogStream
+                        - logs:PutLogEvents
+                        - textract:DetectDocumentText
+                      Resource: '*'
+                    - Effect: Allow
+                      Action:
+                        - s3:PutObject
+                        - s3:GetObject
+                      Resource: '*'
