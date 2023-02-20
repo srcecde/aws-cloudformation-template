@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: Asynchronous Text, KV, Table detection from multi-page pdf via Textract by Srce Cde
+Description: Asynchronous Text, KV, Table, Signature detection from multi-page pdf via Textract by Srce Cde
 
 Parameters:
     CodeBucketName:
@@ -11,11 +11,7 @@ Parameters:
         Type: String
 
     S3KeyLambda2:
-        Description: Enter S3 key reference for parser lambda
-        Type: String
-
-    LambdaLayer:
-        Description: Enter S3 key reference for pandas layer
+        Description: Enter S3 key reference for response parser lambda
         Type: String
 
 Resources:
@@ -33,7 +29,7 @@ Resources:
                           S3Key:
                               Rules:
                                   - Name: prefix
-                                    Value: async-kv-table/
+                                    Value: async-input/
                                   - Name: suffix
                                     Value: .pdf
 
@@ -82,16 +78,6 @@ Resources:
                   Action:
                   - sts:AssumeRole
 
-    PandasLayer:
-        Type: AWS::Lambda::LayerVersion
-        Properties:
-            CompatibleRuntimes:
-              - python3.9
-            Content:
-              S3Bucket: !Ref CodeBucketName
-              S3Key: !Ref LambdaLayer
-            Description: Pandas layer
-
     ParseLambda:
         Type: AWS::Lambda::Function
         Properties:
@@ -100,7 +86,7 @@ Resources:
             Timeout: 30
             Role: !GetAtt LambdaIAMRole.Arn
             Layers:
-                - !Ref PandasLayer
+                - arn:aws:lambda:us-east-1:336392948345:layer:AWSSDKPandas-Python39:3
             Environment:
                 Variables:
                     BUCKET_NAME: !Join [ '-', [ !Ref AWS::StackName, !Ref AWS::Region, !Ref AWS::AccountId ] ]
