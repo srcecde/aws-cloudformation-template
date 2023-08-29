@@ -14,6 +14,10 @@ Parameters:
         Description: Enter S3 key reference for response parser lambda
         Type: String
 
+    LambdaLayer:
+        Description: Enter S3 key reference for pandas layer
+        Type: String
+
 Resources:
     S3Bucket:
         Type: AWS::S3::Bucket
@@ -29,7 +33,7 @@ Resources:
                           S3Key:
                               Rules:
                                   - Name: prefix
-                                    Value: async-input/
+                                    Value: async-kv-table/
                                   - Name: suffix
                                     Value: .pdf
 
