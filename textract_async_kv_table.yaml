@@ -48,7 +48,8 @@ Resources:
         Type: AWS::Lambda::Function
         Properties:
             Handler: lambda_function.lambda_handler
-            Runtime: python3.12
+            Runtime: python3.9
+            Timeout: 10
             Role: !GetAtt LambdaIAMRole.Arn
             Environment:
                 Variables:
@@ -95,7 +96,7 @@ Resources:
         Type: AWS::Lambda::Function
         Properties:
             Handler: lambda_function.lambda_handler
-            Runtime: python3.12
+            Runtime: python3.9
             Timeout: 30
             Role: !GetAtt LambdaIAMRole.Arn
             Layers:
